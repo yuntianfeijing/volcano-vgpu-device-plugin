@@ -606,7 +606,7 @@ func (m *NvidiaDevicePlugin) apiDevices(coreScaling float64) []*pluginapi.Device
 	}
 
 	for _, dev := range devices {
-		for i := uint(0); i < config.DeviceSplitCount; i++ {
+		for i := uint(0); i < m.schedulerConfig.DeviceSplitCount; i++ {
 			id := fmt.Sprintf("%v-%v", dev.ID, i)
 			res = append(res, &pluginapi.Device{
 				ID:       id,
