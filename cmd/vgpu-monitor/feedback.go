@@ -67,6 +67,9 @@ func Observe(lister *nvidia.ContainerLister) {
 	containers := lister.ListContainers()
 
 	for _, c := range containers {
+		if c.Info == nil {
+			continue
+		}
 		recentKernel := c.Info.GetRecentKernel()
 		if recentKernel > 0 {
 			recentKernel--
@@ -87,6 +90,9 @@ func Observe(lister *nvidia.ContainerLister) {
 		}
 	}
 	for idx, c := range containers {
+		if c.Info == nil {
+			continue
+		}
 		priority := c.Info.GetPriority()
 		recentKernel := c.Info.GetRecentKernel()
 		utilizationSwitch := c.Info.GetUtilizationSwitch()

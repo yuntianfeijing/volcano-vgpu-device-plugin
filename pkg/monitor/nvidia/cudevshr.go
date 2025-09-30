@@ -143,13 +143,15 @@ func (l *ContainerLister) Update() error {
 			}
 			klog.Infof("Removing dirname %s in monitorpath", dirName)
 			if c, ok := l.containers[entry.Name()]; ok {
-				syscall.Munmap(c.data)
+				if len(c.data) > 0 {
+					syscall.Munmap(c.data)
+				}
 				delete(l.containers, entry.Name())
 			}
 			_ = os.RemoveAll(dirName)
 			continue
 		}
-		if _, ok := l.containers[entry.Name()]; ok {
+		if u, ok := l.containers[entry.Name()]; ok && u.Info != nil {
 			continue
 		}
 		usage, err := loadCache(dirName)
@@ -179,7 +181,8 @@ func loadCache(fpath string) (*ContainerUsage, error) {
 		return nil, errors.New("cache num not matched")
 	}
 	if len(files) == 0 {
-		return nil, nil
+		klog.Infof("No file in %s, use default ContainerUsage", fpath)
+		return &ContainerUsage{}, nil
 	}
 	cacheFile := ""
 	for _, val := range files {
@@ -193,8 +196,8 @@ func loadCache(fpath string) (*ContainerUsage, error) {
 		break
 	}
 	if cacheFile == "" {
-		klog.Infof("No cache file in %s", fpath)
-		return nil, nil
+		klog.Infof("No cache file in %s, use default ContainerUsage", fpath)
+		return &ContainerUsage{}, nil
 	}
 	info, err := os.Stat(cacheFile)
 	if err != nil {

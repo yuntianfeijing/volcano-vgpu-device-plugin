@@ -25,6 +25,7 @@ import (
 
 	"volcano.sh/k8s-device-plugin/pkg/monitor/nvidia"
 	"volcano.sh/k8s-device-plugin/pkg/plugin/vgpu/config"
+	"volcano.sh/k8s-device-plugin/pkg/plugin/vgpu/util"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"github.com/prometheus/client_golang/prometheus"
@@ -198,14 +199,18 @@ func (cc ClusterManagerCollector) Collect(ch chan<- prometheus.Metric) {
 
 	containers := containerLister.ListContainers()
 	for _, pod := range pods {
+		podDevices, err := util.DecodePodDevices(pod.Annotations[util.AssignedIDsAnnotations])
+		if err != nil {
+			klog.Error("failed to decode pod devices with err=", err.Error())
+		}
 		for _, c := range containers {
 			//for sridx := range srPodList {
 			//	if srPodList[sridx].sr == nil {
 			//		continue
 			//	}
-			if c.Info == nil {
-				continue
-			}
+			// if c.Info == nil {
+			// 	continue
+			// }
 			//podUID := strings.Split(srPodList[sridx].idstr, "_")[0]
 			//ctrName := strings.Split(srPodList[sridx].idstr, "_")[1]
 			podUID := c.PodUID
@@ -214,11 +219,13 @@ func (cc ClusterManagerCollector) Collect(ch chan<- prometheus.Metric) {
 				continue
 			}
 			fmt.Println("Pod matched!", pod.Name, pod.Namespace, pod.Labels)
+			ctrIndex := 0
 			for _, ctr := range pod.Spec.Containers {
 				if strings.Compare(ctr.Name, ctrName) != 0 {
 					continue
 				}
 				fmt.Println("container matched", ctr.Name)
+				ctrIndex = ctrIndex + 1
 				//err := setHostPid(pod, pod.Status.ContainerStatuses[ctridx], &srPodList[sridx])
 				//if err != nil {
 				//	fmt.Println("setHostPid filed", err.Error())
@@ -230,54 +237,105 @@ func (cc ClusterManagerCollector) Collect(ch chan<- prometheus.Metric) {
 					valfix := strings.ReplaceAll(val, "-", "_")
 					podlabels[idxfix] = valfix
 				}
-				for i := 0; i < c.Info.DeviceNum(); i++ {
-					uuid := c.Info.DeviceUUID(i)[0:40]
-					memoryTotal := c.Info.DeviceMemoryTotal(i)
-					memoryLimit := c.Info.DeviceMemoryLimit(i)
-					memoryContextSize := c.Info.DeviceMemoryContextSize(i)
-					memoryModuleSize := c.Info.DeviceMemoryModuleSize(i)
-					memoryBufferSize := c.Info.DeviceMemoryBufferSize(i)
-					memoryOffset := c.Info.DeviceMemoryOffset(i)
-					smUtil := c.Info.DeviceSmUtil(i)
-					lastKernelTime := c.Info.LastKernelTime()
-
-					//fmt.Println("uuid=", uuid, "length=", len(uuid))
-					ch <- prometheus.MustNewConstMetric(
-						ctrvGPUdesc,
-						prometheus.GaugeValue,
-						float64(memoryTotal),
-						pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
-					)
-					ch <- prometheus.MustNewConstMetric(
-						ctrvGPUlimitdesc,
-						prometheus.GaugeValue,
-						float64(memoryLimit),
-						pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
-					)
-					ch <- prometheus.MustNewConstMetric(
-						ctrDeviceMemorydesc,
-						prometheus.CounterValue,
-						float64(memoryTotal),
-						pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
-						fmt.Sprint(memoryContextSize), fmt.Sprint(memoryModuleSize), fmt.Sprint(memoryBufferSize), fmt.Sprint(memoryOffset),
-					)
-					ch <- prometheus.MustNewConstMetric(
-						ctrDeviceUtilizationdesc,
-						prometheus.GaugeValue,
-						float64(smUtil),
-						pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
-					)
-					if lastKernelTime > 0 {
-						lastSec := nowSec - lastKernelTime
-						if lastSec < 0 {
-							lastSec = 0
-						}
+				if (c.Info == nil || c.Info.DeviceNum() < 1) && len(podDevices) >= ctrIndex {
+					ctrDevices := podDevices[ctrIndex-1]
+					fmt.Printf("Use podDevices[%d] for container %s len(ctrDevices):%d\n", ctrIndex-1, ctrName, len(ctrDevices))
+					for i := 0; i < len(ctrDevices); i++ {
+						uuid := ctrDevices[i].UUID
+						memoryLimit := uint64(ctrDevices[i].Usedmem) * 1024 * 1024
+						memoryTotal := 0
+						memoryContextSize := 0
+						memoryModuleSize := 0
+						memoryBufferSize := 0
+						memoryOffset := 0
+						smUtil := 0
+						lastSec := 0
+						klog.Infof("Metrics from pod Annotation for pod %s, container %s, device %d: uuid=%s, memoryTotal=%d, memoryLimit=%d, memoryContextSize=%d, memoryModuleSize=%d, memoryBufferSize=%d, memoryOffset=%d, smUtil=%d, lastSec=%d",
+							pod.Name, ctrName, i, uuid, memoryTotal, memoryLimit, memoryContextSize, memoryModuleSize, memoryBufferSize, memoryOffset, smUtil, lastSec)
+						ch <- prometheus.MustNewConstMetric(
+							ctrvGPUdesc,
+							prometheus.GaugeValue,
+							float64(memoryTotal),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrvGPUlimitdesc,
+							prometheus.GaugeValue,
+							float64(memoryLimit),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrDeviceMemorydesc,
+							prometheus.CounterValue,
+							float64(memoryTotal),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
+							fmt.Sprint(memoryContextSize), fmt.Sprint(memoryModuleSize), fmt.Sprint(memoryBufferSize), fmt.Sprint(memoryOffset),
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrDeviceUtilizationdesc,
+							prometheus.GaugeValue,
+							float64(smUtil),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
+						)
 						ch <- prometheus.MustNewConstMetric(
 							ctrDeviceLastKernelDesc,
 							prometheus.GaugeValue,
 							float64(lastSec),
 							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
 						)
+					}
+				} else {
+					for i := 0; i < c.Info.DeviceNum(); i++ {
+						uuid := c.Info.DeviceUUID(i)[0:40]
+						memoryTotal := c.Info.DeviceMemoryTotal(i)
+						memoryLimit := c.Info.DeviceMemoryLimit(i)
+						memoryContextSize := c.Info.DeviceMemoryContextSize(i)
+						memoryModuleSize := c.Info.DeviceMemoryModuleSize(i)
+						memoryBufferSize := c.Info.DeviceMemoryBufferSize(i)
+						memoryOffset := c.Info.DeviceMemoryOffset(i)
+						smUtil := c.Info.DeviceSmUtil(i)
+						lastKernelTime := c.Info.LastKernelTime()
+						klog.Infof("Metrics for pod %s, container %s, device %d: uuid=%s, memoryTotal=%d, memoryLimit=%d, memoryContextSize=%d, memoryModuleSize=%d, memoryBufferSize=%d, memoryOffset=%d, smUtil=%d, lastKernelTime=%d",
+							pod.Name, ctrName, i, uuid, memoryTotal, memoryLimit, memoryContextSize, memoryModuleSize, memoryBufferSize, memoryOffset, smUtil, lastKernelTime)
+
+						//fmt.Println("uuid=", uuid, "length=", len(uuid))
+						ch <- prometheus.MustNewConstMetric(
+							ctrvGPUdesc,
+							prometheus.GaugeValue,
+							float64(memoryTotal),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrvGPUlimitdesc,
+							prometheus.GaugeValue,
+							float64(memoryLimit),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid, /*,string(sr.sr.uuids[i].uuid[:])*/
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrDeviceMemorydesc,
+							prometheus.CounterValue,
+							float64(memoryTotal),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
+							fmt.Sprint(memoryContextSize), fmt.Sprint(memoryModuleSize), fmt.Sprint(memoryBufferSize), fmt.Sprint(memoryOffset),
+						)
+						ch <- prometheus.MustNewConstMetric(
+							ctrDeviceUtilizationdesc,
+							prometheus.GaugeValue,
+							float64(smUtil),
+							pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
+						)
+						if lastKernelTime > 0 {
+							lastSec := nowSec - lastKernelTime
+							if lastSec < 0 {
+								lastSec = 0
+							}
+							ch <- prometheus.MustNewConstMetric(
+								ctrDeviceLastKernelDesc,
+								prometheus.GaugeValue,
+								float64(lastSec),
+								pod.Namespace, pod.Name, ctrName, fmt.Sprint(i), uuid,
+							)
+						}
 					}
 				}
 			}
